@@ -1,0 +1,327 @@
+package com.parallel;
+import com.sequential.Matrix;
+import mpi.*;
+
+import java.io.File;
+
+public class MyMPI {
+    static int ProcNum = 0; // Number of available processes
+    static int ProcRank = 0; // Rank of current process
+    static int GridSize; // Size of virtual processor grid
+    static int[] GridCoords = new int[2]; // Coordinates of current processor in grid
+    static Cartcomm GridComm; // Grid communicator
+    static Cartcomm ColComm; // Column communicator
+    static Cartcomm RowComm; // Row communicator
+
+    /// Function for simple initialization of matrix elements
+    public static void DummyDataInitialization(int[][] aMatrix, int[][] bMatrix, int Size) {
+        for (int i = 0; i < Size; i++)
+            for (int j = 0; j < Size; j++) {
+                aMatrix[i][j] = 1;
+                bMatrix[i][j] = 1;
+            }
+    }
+
+    public static void DummyDataInitialization(int[] aMatrix, int[] bMatrix, int Size) {
+        for (int i = 0; i < Size; i++)
+            for (int j = 0; j < Size; j++) {
+                aMatrix[i * Size + j] = i;
+                bMatrix[i * Size + j] = j * i;
+            }
+    }
+
+    // Function for random initialization of matrix elements
+    public static void RandomDataInitialization(int[][] aMatrix, int[][] bMatrix, int Size) {
+        int i, j; // Loop variables
+        //srand(unsigned(clock()));
+        for (i = 0; i < Size; i++)
+            for (j = 0; j < Size; j++) {
+                aMatrix[i][j] = (int) (Math.random() * 2000);
+                bMatrix[i][j] = (int) (Math.random() * 2000);
+            }
+    }
+
+    // Function for formatted matrix output
+    public static void PrintMatrix(int[] pMatrix, int RowCount, int ColCount) {
+        int i, j; // Loop variables
+        for (i = 0; i < RowCount; i++) {
+            for (j = 0; j < ColCount; j++)
+                System.out.print(" " + pMatrix[i * ColCount + j]);
+            System.out.print("\n");
+        }
+    }
+
+    public static int[] matToArray(int[][] matrix) {
+        int[] arr = new int[matrix.length * matrix[0].length];
+        for (int i = 0; i < matrix.length; i++)
+            for (int j = 0; j < matrix[0].length; j++)
+                arr[i * matrix[0].length + j] = matrix[i][j];
+        return arr;
+    }
+
+    public static int[][] arrToMat(int[] arr, int rowLength) {
+        int colLength = arr.length / rowLength;
+        int[][] mat = new int[colLength][rowLength];
+        for (int i = 0; i < colLength; i++)
+            for (int j = 0; j < rowLength; j++)
+                mat[i][j] = arr[i * rowLength + j];
+        return mat;
+    }
+
+    public static void copyMatrix(int[][] dest, int[][] src) {
+        if (dest.length == src.length && dest[0].length == src[0].length)
+            for (int i = 0; i < dest.length; i++)
+                for (int j = 0; j < dest[0].length; j++)
+                    dest[i][j] = src[i][j];
+        else throw new IllegalArgumentException();
+    }
+
+    public static void copyArray(int[] dest, int[] src) {
+        for (int i = 0; i < dest.length; i++)
+            dest[i] = src[i];
+    }
+
+    public static void fillZeros(int[][] dest) {
+        for (int i = 0; i < dest.length; i++)
+            for (int j = 0; j < dest[0].length; j++)
+                dest[i][j] = 0;
+    }
+
+    public static void fillZeros(int[] dest) {
+        for (int i = 0; i < dest.length; i++)
+            dest[i] = 0;
+    }
+
+    // Function for matrix multiplication
+    public static void SerialResultCalculation(int[] aMatrix, int[] bMatrix, int[] cMatrix, int Size) {
+        for (int i = 0; i < Size; i++) {
+            for (int j = 0; j < Size; j++)
+                for (int k = 0; k < Size; k++)
+                    cMatrix[i * Size + j] += aMatrix[i * Size + k] * bMatrix[k * Size + j];
+        }
+    }
+
+    // Function for creating the two-dimensional grid communicator
+    // and communicators for each row and each column of the grid
+    public static void CreateGridCommunicators() {
+        // Creation of the Cartesian communicator
+        GridComm = MPI.COMM_WORLD.Create_cart(new int[]{GridSize, GridSize}, new boolean[]{true, true}, true);
+
+        ProcRank = GridComm.Rank();
+        // Determination of the cartesian coordinates for every process
+        GridCoords = GridComm.Coords(ProcRank);
+        // Creating communicators for rows
+        RowComm = GridComm.Sub(new boolean[]{false, true});
+        // Creating communicators for columns
+        ColComm = GridComm.Sub(new boolean[]{true, false});
+    }
+
+    // Function for checkerboard matrix decomposition
+    public static void CheckerboardMatrixScatter(int[] pMatrix, int[] pMatrixBlock, int Size, int blockSize) {
+        int[] MatrixRow = new int[blockSize * Size];
+        if (GridCoords[1] == 0) {
+            ColComm.Scatter(pMatrix, 0, blockSize * Size, MPI.INT, MatrixRow,
+                    0, blockSize * Size, MPI.INT, 0);
+        }
+        int[][] matMat = arrToMat(MatrixRow, Size);
+
+        /*GridComm.Barrier();
+        for(int i = 0; i < ProcNum; i++) {
+            if (ProcRank == i) {
+                System.out.println("Proc(row) - " + i);
+                if(GridCoords[1] == 0)
+                    PrintMatrix(MatrixRow, 1, Size*blockSize);
+                PrintMatrix(matMat[0], 1, Size);
+                PrintMatrix(matMat[1], 1, Size);
+            }
+            MPI.COMM_WORLD.Barrier();
+        }*/
+        int[][] matBlock = new int[blockSize][blockSize];
+
+        for (int i = 0; i < blockSize; i++) {
+            RowComm.Scatter(matMat[i], 0, blockSize, MPI.INT,
+                    matBlock[i], 0, blockSize, MPI.INT, 0);
+        }
+        copyArray(pMatrixBlock, matToArray(matBlock));
+
+        //GridComm.Barrier();
+        /*for(int i = 0; i < ProcNum; i++) {
+            if (ProcRank == i) {
+                System.out.println("Proc(BLock) - " + i);
+                PrintMatrix(pMatrixBlock, 1, blockSize * blockSize);
+            }
+            MPI.COMM_WORLD.Barrier();
+        }*/
+
+    }
+
+    // Data distribution among the processes
+    public static void DataDistribution(int[] aMatrix, int[] bMatrix, int[]
+            pTempAblock, int[] pBblock, int Size, int blockSize) {
+        // Scatter the matrix among the processes of the first grid column
+        CheckerboardMatrixScatter(aMatrix, pTempAblock, Size, blockSize);
+        CheckerboardMatrixScatter(bMatrix, pBblock, Size, blockSize);
+    }
+
+    // Function for gathering the result matrix
+    public static void ResultCollection(int[] cMatrix, int[] pCblock, int Size, int blockSize) {
+        int[][] pResultRow = new int[blockSize][Size];
+
+        for (int i = 0; i < blockSize; i++)
+            RowComm.Gather(pCblock, i * blockSize, blockSize, MPI.INT,
+                    pResultRow[i], 0, blockSize, MPI.INT, 0);
+
+        if (GridCoords[1] == 0)
+            ColComm.Gather(matToArray(pResultRow), 0, blockSize * Size, MPI.INT, cMatrix,
+                    0, blockSize * Size, MPI.INT, 0);
+    }
+
+    // Function for parallel execution of the Fox method
+    public static void ParallelResultCalculation(int[] pAblock, int[] pTempAblock,
+                                                 int[] pBblock, int[] pCblock, int blockSize) {
+        for (int iter = 0; iter < GridSize; iter++) {
+            // Sending blocks of matrix A to the process grid rows
+            int bcastRoot = (GridCoords[0] + iter) % GridSize;
+            // Copying the transmitted block in a separate memory buffer
+            if (GridCoords[1] == bcastRoot)
+                copyArray(pAblock, pTempAblock);
+            // Block roadcasting
+            RowComm.Bcast(pAblock, 0, blockSize * blockSize, MPI.INT, bcastRoot);
+
+            // Block multiplication
+            for (int i = 0; i < blockSize; i++)
+                for (int j = 0; j < blockSize; j++)
+                    for (int k = 0; k < blockSize; k++)
+                        pCblock[i * blockSize + j] += pAblock[i * blockSize + k] * pBblock[k * blockSize + j];
+
+            // Cyclic shift of blocks of matrix B in process grid columns
+            int NextProc = GridCoords[0] + 1;
+            if (GridCoords[0] == GridSize - 1) NextProc = 0;
+            int PrevProc = GridCoords[0] - 1;
+            if (GridCoords[0] == 0) PrevProc = GridSize - 1;
+
+            ColComm.Sendrecv_replace(pBblock, 0, blockSize * blockSize, MPI.INT,
+                    NextProc, 0, PrevProc, 0);
+        }
+    }
+
+    // Test printing of the matrix block
+    public static void TestBlocks(int[] pBlock, int blockSize, String mess) {
+        MPI.COMM_WORLD.Barrier();
+        if (ProcRank == 0) {
+            System.out.println(mess);
+        }
+        for (int i = 0; i < ProcNum; i++) {
+            if (ProcRank == i) {
+                System.out.println("ProcRank = " + ProcRank + "\n");
+                PrintMatrix(pBlock, blockSize, blockSize);
+            }
+            MPI.COMM_WORLD.Barrier();
+        }
+    }
+
+    // Function for testing the matrix multiplication result
+    public static void TestResult(int[] aMatrix, int[] bMatrix, int[] cMatrix,
+                                  int Size) {
+        int[] pSerialResult; // Result matrix of serial multiplication
+        double Accuracy = 1.e-6; // Comparison accuracy
+        int equal = 0; // =1, if the matrices are not equal
+        pSerialResult = new int[Size * Size];
+        fillZeros(pSerialResult);
+        SerialResultCalculation(aMatrix, bMatrix, pSerialResult, Size);
+        for (int i = 0; i < Size * Size; i++)
+            if (Math.abs(pSerialResult[i] - cMatrix[i]) >= Accuracy)
+                equal = 1;
+
+        if (equal == 1)
+            System.out.println("The results of serial and parallel algorithms are NOT identical. Check your code.");
+        else
+            System.out.println("The results of serial and parallel algorithms are identical. ");
+        //PrintMatrix(pSerialResult, Size, Size);
+        //PrintMatrix(cMatrix, Size, Size);
+
+    }
+
+    public static int[] loadMatrix(int size, String name) {
+        String path = "./" + name + ".mat";
+        Matrix mat = new Matrix(size, size);
+        File file = new File(path);
+        if (!file.exists()) {
+            mat.fillRandoms();
+            mat.writeFile(name);
+        } else
+            mat = Matrix.readFile(name);
+
+        return matToArray(mat.get2dArray());
+
+    }
+
+    public static void main(String[] args) {
+        int[] aMatrix = new int[1],
+                bMatrix = new int[1],
+                cMatrix = new int[1],
+                pAblock = null, // Initial block of matrix A
+                pBblock = null, // Initial block of matrix B
+                pCblock = null, // Block of result matrix C
+                pTempAblock = null;
+        int Size, blockSize;
+
+        MPI.Init(args);
+
+        ProcNum = MPI.COMM_WORLD.Size();
+        ProcRank = MPI.COMM_WORLD.Rank();
+        GridSize = (int) Math.sqrt(ProcNum);
+
+        int[] buffer = new int[1];
+        // Creating the cartesian grid, row and column communcators
+        CreateGridCommunicators();
+        if (ProcNum != GridSize * GridSize) {
+            if (ProcRank == 0)
+                System.out.println("Неправильная кількість процессів. Має бути можливим корінь з ProcNum");
+        } else {
+            if (ProcRank == 0) {
+                buffer[0] = Size = 4;
+                if (Size % GridSize != 0) {
+                    System.out.println("Немоливо поділити матрицю між процесами!");
+                    MPI.Finalize();
+                    return;
+                }
+            }
+            //aMatrix = loadMatrix(Size, Size + "x" + Size + "A");
+            //bMatrix = loadMatrix(Size, Size + "x" + Size + "B");
+
+            GridComm.Bcast(buffer, 0, 1, MPI.INT, 0);
+            Size = buffer[0];
+
+            blockSize = Size / GridSize;
+            pAblock = new int[blockSize * blockSize]; // mat Ablock
+            pBblock = new int[blockSize * blockSize]; // mat Bblock
+            pCblock = new int[blockSize * blockSize]; // mat Cblock
+            pTempAblock = new int[blockSize * blockSize]; // mat TempBlock
+            fillZeros(pCblock);
+            aMatrix = new int[Size * Size];
+            bMatrix = new int[Size * Size];
+            cMatrix = new int[Size * Size];
+            if (ProcRank == 0) {
+                DummyDataInitialization(aMatrix, bMatrix, Size);
+            }
+
+            GridComm.Barrier();
+            DataDistribution(aMatrix, bMatrix, pTempAblock, pBblock, Size,
+                    blockSize);
+            // Execution of the Fox method
+            ParallelResultCalculation(pAblock, pTempAblock, pBblock,
+                    pCblock, blockSize);
+            //TestBlocks(pCblock,blockSize, "Results");
+
+            // Gathering the result matrix
+            ResultCollection(cMatrix, pCblock, Size, blockSize);
+            //if(ProcRank == 0)
+            //    TestResult(aMatrix, bMatrix, cMatrix, Size);
+
+            //System.out.println(MPI.Wtime() - startTime);
+
+        }
+        MPI.Finalize();
+    }
+}
